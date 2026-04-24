@@ -242,7 +242,7 @@ struct SimulationRpcResult {
     results: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ResourceCost {
     cpu_insns: String,
@@ -768,8 +768,7 @@ impl SimulationEngine {
         // 2. Update the resource limits in the transaction data
         soroban_data.resources.instructions =
             resources.cpu_instructions.min(u32::MAX as u64) as u32;
-        soroban_data.resources.disk_read_bytes =
-            resources.ledger_read_bytes.min(u32::MAX as u64) as u32;
+        soroban_data.resources.read_bytes = resources.ledger_read_bytes.min(u32::MAX as u64) as u32;
         soroban_data.resources.write_bytes =
             resources.ledger_write_bytes.min(u32::MAX as u64) as u32;
 
@@ -1550,7 +1549,6 @@ impl SimulationEngine {
             network_passphrase,
             expiration_ledger,
         )?;
-        result.ttl_analysis = None;
 
         tracing::info!(
             signers = signers.len(),
