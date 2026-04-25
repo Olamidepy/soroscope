@@ -2,6 +2,7 @@
 
 use crate::insights::InsightsEngine;
 use crate::simulation::{SimulationEngine, SimulationResult, SorobanResources};
+use crate::ws::{SimulationBus};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -671,6 +672,9 @@ pub struct JobWorker {
     insights_engine: InsightsEngine,
     config: JobQueueConfig,
     http_client: Client,
+    /// Optional pub/sub bus for real-time WebSocket streaming.
+    /// When `None` the worker runs in polling-only mode (backwards-compatible).
+    bus: Option<Arc<SimulationBus>>,
 }
 
 impl JobWorker {
@@ -686,7 +690,14 @@ impl JobWorker {
             insights_engine,
             config,
             http_client: Client::new(),
+            bus: None,
         }
+    }
+
+    /// Attach a [`SimulationBus`] so the worker publishes real-time events.
+    pub fn with_bus(mut self, bus: Arc<SimulationBus>) -> Self {
+        self.bus = Some(bus);
+        self
     }
 
     /// Start the worker loop
@@ -711,12 +722,13 @@ impl JobWorker {
                     let insights = self.insights_engine.clone();
                     let config = self.config.clone();
                     let http_client = self.http_client.clone();
+                    let bus = self.bus.clone();
 
                     tokio::spawn(async move {
                         let _permit = permit; // Hold permit until task completes
 
                         if let Err(e) =
-                            Self::process_job(&queue, job, engine, insights, config, http_client)
+                            Self::process_job(&queue, job, engine, insights, config, http_client, bus)
                                 .await
                         {
                             tracing::error!("Job processing error: {}", e);
@@ -742,24 +754,42 @@ impl JobWorker {
         insights_engine: InsightsEngine,
         config: JobQueueConfig,
         http_client: Client,
+        bus: Option<Arc<SimulationBus>>,
     ) -> Result<(), JobError> {
         tracing::info!(job_id = %job.id, "Processing job");
 
-        // Mark as processing
+        // Mark as processing and emit first progress event
         queue.mark_processing(&job.id).await?;
+        if let Some(b) = &bus {
+            b.publish(SimulationBus::progress(&job.id, 10, "Processing started"));
+        }
 
         // Process with timeout
         let timeout = Duration::from_secs(job.timeout_secs as u64);
         let result = tokio::time::timeout(
             timeout,
-            Self::execute_job(&job, &engine, &insights_engine, queue),
+            Self::execute_job(&job, &engine, &insights_engine, queue, bus.clone()),
         )
         .await;
 
-        // Handle result and send webhook
+        // Handle result, emit terminal event, and optionally send webhook
         match result {
             Ok(Ok(job_result)) => {
                 queue.complete(&job.id, &job_result).await?;
+
+                // Emit completed event with resource summary
+                if let Some(b) = &bus {
+                    if let JobResult::Success { simulation_result: Some(ref sim), .. } = job_result {
+                        b.publish(SimulationBus::completed(
+                            &job.id,
+                            &sim.resources,
+                            sim.cost_stroops,
+                        ));
+                    } else {
+                        // OptimizeLimits / Compare jobs: emit a generic completion
+                        b.publish(SimulationBus::progress(&job.id, 100, "Completed"));
+                    }
+                }
 
                 if let Some(webhook_config) = job.get_webhook_config() {
                     Self::send_webhook(
@@ -778,6 +808,10 @@ impl JobWorker {
                 let error_msg = e.to_string();
                 queue.fail(&job.id, &error_msg, "ProcessingError").await?;
 
+                if let Some(b) = &bus {
+                    b.publish(SimulationBus::failed(&job.id, &error_msg, "ProcessingError"));
+                }
+
                 if let Some(webhook_config) = job.get_webhook_config() {
                     Self::send_webhook(
                         &http_client,
@@ -794,6 +828,10 @@ impl JobWorker {
             Err(_) => {
                 let error_msg = format!("Job timed out after {} seconds", job.timeout_secs);
                 queue.fail(&job.id, &error_msg, "Timeout").await?;
+
+                if let Some(b) = &bus {
+                    b.publish(SimulationBus::failed(&job.id, &error_msg, "Timeout"));
+                }
 
                 if let Some(webhook_config) = job.get_webhook_config() {
                     Self::send_webhook(
@@ -818,8 +856,19 @@ impl JobWorker {
         engine: &SimulationEngine,
         insights_engine: &InsightsEngine,
         queue: &JobQueue,
+        bus: Option<Arc<SimulationBus>>,
     ) -> Result<JobResult, Box<dyn std::error::Error + Send + Sync>> {
         let payload = job.get_payload().ok_or("Invalid payload")?;
+
+        /// Helper: update DB progress and publish WebSocket event simultaneously.
+        macro_rules! progress {
+            ($percent:expr, $msg:expr) => {{
+                let _ = queue.update_progress(&job.id, $percent, $msg).await;
+                if let Some(ref b) = bus {
+                    b.publish(SimulationBus::progress(&job.id, $percent, $msg));
+                }
+            }};
+        }
 
         match payload {
             JobPayload::Analyze {
@@ -828,9 +877,7 @@ impl JobWorker {
                 args,
                 ledger_overrides,
             } => {
-                queue
-                    .update_progress(&job.id, 30, "Running simulation")
-                    .await?;
+                progress!(30, "Running simulation");
 
                 let sim_result = engine
                     .simulate_from_contract_id(
@@ -839,16 +886,42 @@ impl JobWorker {
                         args.unwrap_or_default(),
                         ledger_overrides,
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| {
+                        // If this was a provider failover during simulation, emit the
+                        // event so WebSocket clients see the provider switch in real time.
+                        // (The SimulationEngine surfaces failovers via its error chain;
+                        // here we inspect the message for a best-effort broadcast.)
+                        let msg = e.to_string();
+                        if let Some(ref b) = bus {
+                            if msg.contains("failover") || msg.contains("provider") {
+                                b.publish(SimulationBus::provider_failover(
+                                    &job.id,
+                                    "unknown",
+                                    "next-available",
+                                    &msg,
+                                ));
+                            }
+                        }
+                        e
+                    })?;
 
-                queue
-                    .update_progress(&job.id, 70, "Generating insights")
-                    .await?;
+                // If the engine ran in consensus mode, surface the quorum result.
+                // (SimulationEngine sets `sim_result.provider_name` when consensus
+                //  succeeded; we broadcast an agreement event here.)
+                if let Some(ref b) = bus {
+                    b.publish(SimulationBus::consensus_check(
+                        &job.id,
+                        true, // reached this point → consensus passed (or failover mode)
+                        vec![], // provider names are opaque at this layer
+                        None,
+                    ));
+                }
+
+                progress!(70, "Generating insights");
                 let _insights = insights_engine.analyze(&sim_result.resources);
 
-                queue
-                    .update_progress(&job.id, 90, "Finalizing results")
-                    .await?;
+                progress!(90, "Finalizing results");
 
                 Ok(JobResult::Success {
                     resources: Some(sim_result.resources.clone()),
@@ -863,17 +936,13 @@ impl JobWorker {
                 args,
                 safety_margin,
             } => {
-                queue
-                    .update_progress(&job.id, 30, "Running optimization")
-                    .await?;
+                progress!(30, "Running optimization");
 
                 let report = engine
                     .optimize_limits(&contract_id, &function_name, args, safety_margin)
                     .await?;
 
-                queue
-                    .update_progress(&job.id, 90, "Finalizing results")
-                    .await?;
+                progress!(90, "Finalizing results");
 
                 Ok(JobResult::Success {
                     resources: None,

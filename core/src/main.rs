@@ -10,6 +10,7 @@ mod jobs;
 mod parser;
 pub mod rpc_provider;
 mod simulation;
+mod ws;
 
 use crate::comparison::{CompareMode, RegressionFlag, RegressionReport, ResourceDelta};
 use crate::errors::AppError;
@@ -18,6 +19,7 @@ use crate::fee_collector::{FeeCollector, FeeCollectorConfig};
 use crate::fee_store::FeeStore;
 use crate::insights::InsightsEngine;
 use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
+use crate::ws::SimulationBus;
 use crate::rpc_provider::{ProviderRegistry, RpcProvider};
 use crate::simulation::{SimulationCache, SimulationEngine, SimulationMode, SimulationResult};
 use axum::{
@@ -187,7 +189,7 @@ fn build_providers(config: &AppConfig) -> Vec<RpcProvider> {
 }
 
 /// Shared application state injected into every Axum handler via [`State`].
-struct AppState {
+pub struct AppState {
     engine: SimulationEngine,
     cache: Arc<SimulationCache>,
     insights_engine: InsightsEngine,
@@ -200,6 +202,8 @@ struct AppState {
     fee_analytics_engine: FeeAnalyticsEngine,
     /// Fee data store
     fee_store: Arc<FeeStore>,
+    /// Real-time event bus for WebSocket streaming (Issue #105).
+    pub simulation_bus: Arc<SimulationBus>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -956,7 +960,8 @@ async fn fee_analytics(
     tags(
         (name = "Analysis", description = "Soroban contract resource analysis endpoints"),
         (name = "Auth", description = "SEP-10 wallet authentication"),
-        (name = "Fee Market", description = "Stellar/Soroban fee market analysis and prediction")
+        (name = "Fee Market", description = "Stellar/Soroban fee market analysis and prediction"),
+        (name = "Streaming", description = "WebSocket real-time simulation progress streaming")
     ),
     info(
         title = "SoroScope API",
@@ -1131,6 +1136,9 @@ async fn main() {
     let job_queue = JobQueue::new(database_url, job_queue_config.clone())
         .await
         .expect("Failed to initialize job queue");
+    // ── WebSocket event bus ─────────────────────────────────────────────
+    let simulation_bus = SimulationBus::new();
+
     let job_worker = JobWorker::new(
         job_queue.clone(),
         SimulationEngine::with_registry_and_timeout_and_mode(
@@ -1140,7 +1148,9 @@ async fn main() {
         ),
         InsightsEngine::new(),
         job_queue_config,
-    );
+    )
+    .with_bus(Arc::clone(&simulation_bus));
+
     tokio::spawn(async move {
         job_worker.run().await;
     });
@@ -1199,6 +1209,7 @@ async fn main() {
         job_queue,
         fee_analytics_engine,
         fee_store,
+        simulation_bus,
     });
 
     let cors = CorsLayer::new().allow_origin(Any);
@@ -1225,6 +1236,9 @@ async fn main() {
         .route("/fees/recommend", get(fee_recommend))
         .route("/fees/history", get(fee_history))
         .route("/fees/analytics", get(fee_analytics))
+        // WebSocket streaming (Issue #105) — no auth required on the upgrade;
+        // the client passes the job_id in the path.
+        .route("/ws/jobs/:job_id", get(ws::ws_handler))
         .merge(protected)
         .layer(Extension(auth_state))
         .layer(cors)
