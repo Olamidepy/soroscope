@@ -84,8 +84,8 @@ struct AppConfig {
     /// Primary RPC URL — used as a single-provider fallback when
     /// `RPC_PROVIDERS` is not set.
     soroban_rpc_url: String,
-    /// JWT secret for authentication
-    jwt_secret: String,
+    /// Optional RSA Private Key PEM for RS256 JWTs. If missing, a dev key is generated.
+    jwt_private_key: Option<String>,
     /// Stellar network passphrase
     network_passphrase: String,
     /// Redis URL reserved for the distributed cache migration (issue #65).
@@ -207,7 +207,6 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("server_port", 8080)?
         .set_default("rust_log", "info")?
         .set_default("soroban_rpc_url", "https://soroban-testnet.stellar.org")?
-        .set_default("jwt_secret", "dev-secret-change-in-production")?
         .set_default("network_passphrase", "Test SDF Network ; September 2015")?
         .set_default("redis_url", "redis://127.0.0.1:6379")?
         .set_default("rpc_providers", "")?
@@ -1462,9 +1461,8 @@ async fn fee_analytics(
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        analyze, analyze_wasm, analyze_wasm_branches, optimize_limits, compare_handler,
-        auth::challenge_handler, auth::verify_handler,
-        jobs::submit_job_handler, jobs::get_job_handler, jobs::cancel_job_handler,
+        analyze, analyze_wasm, optimize_limits, compare_handler,
+        auth::challenge_handler, auth::verify_handler, auth::jwks_handler,
         fee_recommend, fee_history, fee_analytics
     ),
     components(schemas(
@@ -1478,8 +1476,7 @@ async fn fee_analytics(
         crate::wasm_branch_analysis::PathResult,
         auth::ChallengeRequest, auth::ChallengeResponse,
         auth::VerifyRequest, auth::VerifyResponse,
-        jobs::Job, jobs::JobStatus, jobs::JobType, jobs::JobPayload,
-        jobs::JobProgress, jobs::JobResult, jobs::SubmitJobRequest, jobs::SubmitJobResponse,
+        auth::JwkSetResponse, auth::JwkResponse,
         crate::simulation::OptimizationBuffer,
         crate::simulation::SorobanResources,
         FeeRecommendationRequest, FeeRecommendationResponse,
@@ -1732,7 +1729,7 @@ async fn main() {
     tracing::info!("Starting SoroScope API Server...");
 
     let auth_state = Arc::new(auth::AuthState::new(
-        config.jwt_secret.clone(),
+        config.jwt_private_key.clone(),
         None,
         config.network_passphrase.clone(),
     ));
@@ -1934,6 +1931,7 @@ async fn main() {
         .route("/metrics", get(metrics_handler))
         .route("/auth/challenge", post(auth::challenge_handler))
         .route("/auth/verify", post(auth::verify_handler))
+        .route("/auth/jwks", get(auth::jwks_handler))
         // Fee market routes (public access)
         .route("/fees/recommend", get(fee_recommend))
         .route("/fees/history", get(fee_history))

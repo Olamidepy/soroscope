@@ -44,10 +44,5 @@ sled = "0.34"
 sqlx = { version = "0.7", features = ["runtime-tokio", "tls-native-tls", "postgres", "sqlite", "uuid", "chrono", "migrate"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-wasmparser = "0.244.0"
-wasm-encoder = { version = "0.244.0", features = ["wasmparser"] }
-
-[dev-dependencies]
-proptest = "1"
-tower = { version = "0.4", features = ["util"] }
-http = "1"
+clap = { version = "4", features = ["derive"] }
+rsa = "0.9"
