@@ -33,7 +33,7 @@ impl Proxy {
 
     pub fn upgrade_to(env: Env, implementation: Address) {
         let admin = Self::get_admin(env.clone());
-        env.require_auth(&admin);
+        admin.require_auth();
         env.storage().persistent().set(&DataKey::Implementation, &implementation);
     }
 
@@ -44,7 +44,7 @@ impl Proxy {
         args: Vec<Val>,
     ) -> Val {
         let admin = Self::get_admin(env.clone());
-        env.require_auth(&admin);
+        admin.require_auth();
         env.storage().persistent().set(&DataKey::Implementation, &implementation);
         Self::delegate_call(env, method, args)
     }
@@ -73,7 +73,7 @@ impl Proxy {
 
     pub fn set_storage(env: Env, key: BytesN<32>, value: Val) {
         let admin = Self::get_admin(env.clone());
-        env.require_auth(&admin);
+        admin.require_auth();
         env.storage().persistent().set(&DataKey::Storage(key), &value);
     }
 

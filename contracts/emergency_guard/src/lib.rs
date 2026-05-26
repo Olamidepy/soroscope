@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, log, Address, Env, Error, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, log, Address, Env, Vec};
 
 /// Granular pause types using bitmask for efficient storage
 /// Each bit represents a different pausable operation

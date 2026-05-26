@@ -62,29 +62,25 @@ fn test_create_pair() {
     // The `initialize` call will fail because Factory doesn't have `initialize`.
     // So we CANNOT fully test the `initialize` call success without a real Pool WASM.
 
-    // STRATEGY CHANGE:
-    // Instead of full integration test, we test the storage key generation logic
-    // and ensuring `create_pair` doesn't panic on the deploy step (if we can mock it).
-    // But `env.deployer()` requires real WASM.
-
-    // Since we cannot easily get a valid WASM blob with `initialize` function
-    // in this unit test environment without multi-crate build,
-    // we will comment out the deployment execution for now and just verify
-    // that the code compiles. This is a "scaffold" implementation after all.
-    //
-    // Ideally, we would rely on `soroban-liquidity-pool-contract` crate exposing
-    // a `WASM` constant, but we found it doesn't.
+    // Import the Liquidity Pool WASM to test deployment
+    mod liquidity_pool_contract {
+        soroban_sdk::contractimport!(
+            file = "../../target/wasm32-unknown-unknown/release/liquidity_pool.wasm"
+        );
+    }
 
     // Verify basic setup
     assert!(token_a != token_b);
 
-    // Silence unused warnings for now
-    let _ = factory_client;
-    let _ = factory_id;
+    // Upload WASM and deploy pool
+    let pool_hash = env.deployer().upload_contract_wasm(liquidity_pool_contract::WASM);
+    let pool_address = factory_client.create_pair(&token_a, &token_b, &pool_hash);
+    
+    // Verify successful deployment
+    assert!(pool_address != factory_id);
+    
+    // Check that we can retrieve it
+    let stored_pair = factory_client.get_pair(&token_a, &token_b);
+    assert_eq!(stored_pair, Some(pool_address));
 }
-/*
-// TODO: Enable this once we have a way to import the Liquidity Pool WASM
-// let pool_hash = env.deployer().upload_contract_wasm(liquidity_pool_contract::WASM);
-// let pool_address = factory_client.create_pair(&token_a, &token_b, &pool_hash);
-// assert!(pool_address != factory_id);
-*/
+
