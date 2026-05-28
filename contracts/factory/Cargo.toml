@@ -9,12 +9,14 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = "22.0.0"
+emergency_guard = { path = "../emergency_guard", default-features = false }
 
 [dev-dependencies]
 soroban-sdk = { version = "22.0.0", features = ["testutils"] }
 # We need the pool contract code for integration tests
 liquidity-pool-contract = { package = "liquidity_pool", path = "../liquidity_pool" }
 token-contract = { package = "soroban-token-contract", path = "../token" }
+emergency_guard = { path = "../emergency_guard", default-features = false }
 
 [features]
 testutils = []
