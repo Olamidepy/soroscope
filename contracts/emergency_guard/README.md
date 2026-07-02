@@ -48,6 +48,18 @@ For actual multi-sig signing in production:
 - Use wallet-based multi-sig solutions
 - Implement timelock + voting patterns for critical operations
 
+## Benchmarking Bitmask Storage
+
+A lightweight benchmark helper is available for comparing a single bitmask storage entry against a per-operation mapping layout:
+
+```rust
+let stats = EmergencyGuard::benchmark_storage(env, 6);
+assert_eq!(stats.bitmask_storage_entries, 1);
+assert_eq!(stats.mapping_storage_entries, 6);
+```
+
+This models the storage and access overhead for pause-state checks, where a bitmask keeps the pause state in one ledger entry while a mapping-based approach would require one entry per operation.
+
 ## Usage Guide
 
 ### 1. Initialize Emergency Guard

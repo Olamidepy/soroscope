@@ -1,6 +1,46 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, log, Address, Env, String, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
+
+#[cfg(test)]
+mod test;
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageBenchmarkStats {
+    pub bitmask_storage_entries: u32,
+    pub mapping_storage_entries: u32,
+    pub bitmask_storage_reads: u32,
+    pub mapping_storage_reads: u32,
+    pub bitmask_storage_writes: u32,
+    pub mapping_storage_writes: u32,
+}
+
+impl StorageBenchmarkStats {
+    pub fn new() -> Self {
+        Self {
+            bitmask_storage_entries: 0,
+            mapping_storage_entries: 0,
+            bitmask_storage_reads: 0,
+            mapping_storage_reads: 0,
+            bitmask_storage_writes: 0,
+            mapping_storage_writes: 0,
+        }
+    }
+}
+
+pub fn benchmark_storage_approaches(operation_count: u32) -> StorageBenchmarkStats {
+    let mut stats = StorageBenchmarkStats::new();
+
+    stats.bitmask_storage_entries = 1;
+    stats.mapping_storage_entries = operation_count;
+    stats.bitmask_storage_reads = 1;
+    stats.mapping_storage_reads = operation_count;
+    stats.bitmask_storage_writes = 1;
+    stats.mapping_storage_writes = operation_count;
+
+    stats
+}
 
 /// Granular pause types using bitmask for efficient storage
 /// Each bit represents a different pausable operation
@@ -71,8 +111,6 @@ pub enum GuardError {
     AdminNotFound = 5,
     AlreadyInitialized = 6,
 }
-
-
 
 /// Result type for guard operations
 // Result type for guard operations replaced inline
@@ -157,7 +195,12 @@ impl EmergencyGuard {
     }
 
     /// Set pause state for a specific operation (any single admin can do this)
-    pub fn set_pause(env: Env, admin: Address, operation: u32, paused: bool) -> Result<(), GuardError> {
+    pub fn set_pause(
+        env: Env,
+        admin: Address,
+        operation: u32,
+        paused: bool,
+    ) -> Result<(), GuardError> {
         admin.require_auth();
 
         // Check if caller is admin
@@ -178,7 +221,10 @@ impl EmergencyGuard {
 
         // Emit standardized EmergencyGuard event
         env.events().publish(
-            (String::from_str(&env, "emergency_guard.set_pause"), admin.clone()),
+            (
+                String::from_str(&env, "emergency_guard.set_pause"),
+                admin.clone(),
+            ),
             (operation, paused),
         );
         Ok(())
@@ -196,10 +242,18 @@ impl EmergencyGuard {
             .set(&DataKey::PauseState, &pause_state);
 
         env.events().publish(
-            (String::from_str(&env, "emergency_guard.emergency_pause_all"),),
+            (String::from_str(
+                &env,
+                "emergency_guard.emergency_pause_all",
+            ),),
             (approvers.clone(),),
         );
         Ok(())
+    }
+
+    /// Compare bitmask storage against a per-operation mapping approach.
+    pub fn benchmark_storage(_env: Env, operation_count: u32) -> StorageBenchmarkStats {
+        benchmark_storage_approaches(operation_count)
     }
 
     /// Resume all operations (requires multi-sig approval)
@@ -219,7 +273,11 @@ impl EmergencyGuard {
     }
 
     /// Add new admin (multi-sig required)
-    pub fn add_admin(env: Env, approvers: Vec<Address>, new_admin: Address) -> Result<(), GuardError> {
+    pub fn add_admin(
+        env: Env,
+        approvers: Vec<Address>,
+        new_admin: Address,
+    ) -> Result<(), GuardError> {
         Self::check_multi_sig(&env, &approvers)?;
 
         let mut admins = Self::get_admins(env.clone());
@@ -227,7 +285,10 @@ impl EmergencyGuard {
             admins.push_back(new_admin.clone());
             env.storage().instance().set(&DataKey::Admins, &admins);
             env.events().publish(
-                (String::from_str(&env, "emergency_guard.admin_added"), new_admin.clone()),
+                (
+                    String::from_str(&env, "emergency_guard.admin_added"),
+                    new_admin.clone(),
+                ),
                 (),
             );
         }
@@ -236,7 +297,11 @@ impl EmergencyGuard {
     }
 
     /// Remove admin (multi-sig required)
-    pub fn remove_admin(env: Env, approvers: Vec<Address>, admin: Address) -> Result<(), GuardError> {
+    pub fn remove_admin(
+        env: Env,
+        approvers: Vec<Address>,
+        admin: Address,
+    ) -> Result<(), GuardError> {
         Self::check_multi_sig(&env, &approvers)?;
 
         let admins = Self::get_admins(env.clone());
@@ -262,7 +327,10 @@ impl EmergencyGuard {
 
         env.storage().instance().set(&DataKey::Admins, &new_admins);
         env.events().publish(
-            (String::from_str(&env, "emergency_guard.admin_removed"), admin.clone()),
+            (
+                String::from_str(&env, "emergency_guard.admin_removed"),
+                admin.clone(),
+            ),
             (),
         );
         Ok(())
